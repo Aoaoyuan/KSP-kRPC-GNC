@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Local dependency and reference caches
+.test-python-deps/
+.reference/
+.diagnostic-tools/
+.pre-install-*/
+
+# Local launch configuration
+local-python.cmd
+.env
+.env.*
+
+# Flight, camera, and diagnostic output
+*.log
+*.err.log
+cinematic-cues-*.csv
+flight-test-*-result.json
+
+# Local mods, archives, and game artifacts
+*.zip
+*.craft
+*.sfs
+*.loadmeta
+*.cs
+
+# Superseded prototypes and local planning notes
+MyLaunch.py
+MyRecover.py
+RECOVERY_NEXT.md
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
