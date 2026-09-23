@@ -185,14 +185,14 @@ def recovery_args(tag, leg_offset, *, target=None, allow_warp=False,
                    max_tilt=None, terminal_tilt=None,
                    gear_lead_seconds=None, gear_max_height=None,
                    grid_retract_height=None, require_land=False,
-                   aero_target_tilt=None):
+                   aero_target_tilt=None, auto_recover=False):
     args = ["--execute", "--background", "--booster-tag", tag,
             "--payload-tag", "payload", "--leg-offset", str(leg_offset),
             "--landing-surface-offset", "0", "--expected-engines", "7"]
     args += ["--boostback-cutoff-height", str(boostback_cutoff_height)]
     # 当前东向弹道在载荷交接后会迅速离 KSC 超过 1600 km。400 km 已实飞
     # 证明会在切到载荷/中央芯后删除落地侧芯，因此四个分离载具统一保持
-    # 2000 km 物理范围，直到玩家手动回收。脚本仍不会自动回收或删除载具。
+    # 2000 km 物理范围，直到芯级落稳；是否调用 KSP 回收由选项决定。
     args += ["--physics-range", str(physics_range)]
     if reentry_off_speed is not None:
         args += ["--reentry-off-speed", str(reentry_off_speed)]
@@ -219,6 +219,8 @@ def recovery_args(tag, leg_offset, *, target=None, allow_warp=False,
         # 中央芯采用自然下程落区，不做耗油的返场闭环；仍要求最终状态必须
         # 是 landed，使落水、平台未加载或弹道偏离都明确判为失败。
         args.append("--require-land")
+    if auto_recover:
+        args.append("--auto-recover")
     if allow_warp:
         args.append("--allow-warp")
     if no_reentry_burn:
@@ -312,7 +314,7 @@ def fly(args, conn, vessel, left, right, core, payload):
             aero_target_tilt=5,
             # 第 24 次 1.05 落到目标以东约 1.15 km；第 25 次 1.12 又落到
             # 目标以西约 0.79 km。线性插值取 1.08，目标是落到跑道本体。
-            boostback_return_gain=1.08),
+            boostback_return_gain=1.08, auto_recover=args.auto_recover),
             selected_vessel=side_vessels[0],
             ignition_barrier=side_ignition_barrier)
         manager.start("booster_right", recovery_args(
@@ -321,7 +323,7 @@ def fly(args, conn, vessel, left, right, core, payload):
             aero_target_tilt=5,
             # 第 24 次 1.06 落到目标以东约 0.82 km；第 25 次 1.13 落到
             # 目标以西约 0.65 km。插值取 1.09，并继续独立标定非对称误差。
-            boostback_return_gain=1.09),
+            boostback_return_gain=1.09, auto_recover=args.auto_recover),
             selected_vessel=side_vessels[1],
             ignition_barrier=side_ignition_barrier)
 
@@ -448,18 +450,21 @@ def fly(args, conn, vessel, left, right, core, payload):
             no_boostback=True, aero_target_tilt=25,
             max_tilt=28, terminal_tilt=10,
             gear_lead_seconds=15, gear_max_height=2500,
-            grid_retract_height=3500),
+            grid_retract_height=3500, auto_recover=args.auto_recover),
             selected_vessel=core_only)
 
         # 到这里自动发射任务结束。确保载荷油门为零，但不改变控制点、
         # 不点火上面级、不接管姿态或规划入轨。用户可以
         # 更换任意载荷，只要仍有一个不随芯级分离的 ModuleCommand 供识别。
         upper.control.throttle = 0.0
-        # 玩家可能切到任意芯级观察。载荷也必须临时保持离轨物理模拟，
-        # 否则它在大气内成为非活动载具时会被 KSP 放上轨道并直接删除。
-        upper.physics_range = 2000000.0
-        if upper.physics_range < 1990000.0:
-            raise RuntimeError("载荷临时物理范围设置未生效，禁止交接")
+        # 当前载荷已经由 KSP 保持物理模拟，额外扩大物理范围会增加结构抖动。
+        # 切去看芯级时，PRE 的载具切换事件会给后台载荷恢复远距范围。
+        if sc.active_vessel == upper:
+            upper.physics_range = 2500.0
+        else:
+            upper.physics_range = 2000000.0
+            if upper.physics_range < 1990000.0:
+                raise RuntimeError("后台载荷临时物理范围设置未生效，禁止交接")
         try:
             upper.auto_pilot.engaged = False
         except Exception:
@@ -471,10 +476,12 @@ def fly(args, conn, vessel, left, right, core, payload):
               f"上面级尚未点火，后续入轨完全由玩家操作。"
               f"三枚芯级后台回收继续运行。")
         manager.wait()
-        # 依照任务约定不自动缩小任何载具的物理范围。这样落地芯级不会因
-        # 玩家继续操纵远处载荷而被 KSP 卸载；由玩家手动回收载具结束其生命周期。
-        print("全部后台回收线程已结束；所有现存载具继续保持 2000 km 物理范围，"
-              "直到玩家手动回收。")
+        # 自动回收时，落稳的芯级已分别调用 KSP 回收接口；失败的芯级保留，
+        # 仍可由玩家手动处理。摄影模式不传此选项，保留地面镜头。
+        if args.auto_recover:
+            print("后台回收线程已结束；请检查自动回收日志，未成功的芯级仍可手动回收。")
+        else:
+            print("全部后台回收线程已结束；现存芯级保持扩展物理范围，等待手动回收。")
     finally:
         if throttle is not None:
             throttle.close()
@@ -495,6 +502,8 @@ def main(argv=None):
     parser.add_argument("--core-reserve", type=float, default=.12,
                         help="中央芯再入防热与着陆燃料比例，默认 12%%")
     parser.add_argument("--leg-offset", type=float, default=16)
+    parser.add_argument("--auto-recover", action="store_true",
+                        help="三枚芯级落稳后自动调用 KSP 回收载具")
     parser.add_argument("--allow-warp", action="store_true",
                         help="允许玩家在滑行段手动加速；脚本从不主动加速")
     args = parser.parse_args(argv)

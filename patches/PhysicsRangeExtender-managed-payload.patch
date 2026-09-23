@@ -1,0 +1,81 @@
+diff --git a/PhysicsRangeExtender/PhysicsRangeExtender.cs b/PhysicsRangeExtender/PhysicsRangeExtender.cs
+index f4d14e2..384f41e 100644
+--- a/PhysicsRangeExtender/PhysicsRangeExtender.cs
++++ b/PhysicsRangeExtender/PhysicsRangeExtender.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Linq;
+ using UnityEngine;
+@@ -93,7 +93,8 @@ namespace PhysicsRangeExtender
+         private void ApplyPhysRange(Vessel data0, Vessel data1)
+         {
+             CheckIfFreezeIsNeeded(data0, data1);
+-            ApplyRangesToVessels();
++            // Switching fires before ActiveVessel is always updated.
++            ApplyRangesToVessels(false, data1);
+         }
+ 
+         private void CheckIfFreezeIsNeeded(Vessel from, Vessel to)
+@@ -276,15 +277,52 @@ namespace PhysicsRangeExtender
+             ApplyRangesToVessels(updatingFromUi);
+         }
+ 
+-        private static void ApplyRangesToVessels(bool updatingFromUi = false)
++        /// <summary>
++        /// Only vessels explicitly tagged by the kRPC recovery scripts may use the
++        /// extended range.  The upstream mod applies the range to every vessel in
++        /// the save, which can force unloaded stations onto physics rails and alter
++        /// their orbits when the range is thousands of kilometres.
++        /// </summary>
++        private static bool HasTag(Vessel vessel, string tag)
++        {
++            return vessel != null && vessel.parts != null &&
++                   vessel.parts.Any(part => part != null && part.tag == tag);
++        }
++
++        private static bool IsManagedRecoveryVessel(Vessel vessel)
++        {
++            return HasTag(vessel, "booster_left") ||
++                   HasTag(vessel, "booster_right") ||
++                   HasTag(vessel, "booster_core") ||
++                   HasTag(vessel, "payload");
++        }
++
++        private static void ApplyRangesToVessels(bool updatingFromUi = false,
++            Vessel becomingActive = null)
+         {
+             if (!PreSettings.ModEnabled) return;
+             try
+             {
+                 var vesselsCount = FlightGlobals.Vessels.Count;
++                var activeVessel = becomingActive ?? FlightGlobals.ActiveVessel;
+ 
+                 for (var i = 0; i < vesselsCount; i++)
+                 {
++                    // Leave stations, probes, old debris and every unrelated craft
++                    // on KSP's stock load/unload distances.  In particular, never
++                    // load an orbiting station merely because a booster is landing
++                    // on the same celestial body.
++                    var vessel = FlightGlobals.Vessels[i];
++                    if (!IsManagedRecoveryVessel(vessel)) continue;
++
++                    // Active payloads need no long load radius. Background payloads
++                    // retain the extended range so they survive booster viewing.
++                    if (vessel == activeVessel && HasTag(vessel, "payload"))
++                    {
++                        vessel.vesselRanges = new VesselRanges();
++                        continue;
++                    }
++
+                     // check to avoid landed vessels to be destroyed when the active vessel is sub-orbital
+                     if (FlightGlobals.Vessels[i].LandedOrSplashed && !ShouldLandedVesselsBeLoaded()) continue;
+                     // 
+@@ -326,4 +364,4 @@ namespace PhysicsRangeExtender
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}

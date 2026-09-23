@@ -64,8 +64,10 @@ python MyHeavyLaunch.py
 确认火箭处于发射前状态、`current_stage == 5` 后才能执行任务：
 
 ```bash
-python MyHeavyLaunch.py --execute
+python MyHeavyLaunch.py --execute --auto-recover
 ```
+
+若要保留落地芯级供拍摄或手动回收，省略 `--auto-recover`。
 
 ## Windows 双击入口
 
@@ -84,8 +86,8 @@ set "KSP_PYTHON=C:\Path\To\Python\python.exe"
 
 可用入口：
 
-- `StartHeavyFlight.cmd`：普通三芯自动任务。
-- `StartCinematicFlight.cmd`：一遍式摄影预览。
+- `StartHeavyFlight.cmd`：普通三芯自动任务；三枚芯级完整落稳 8 秒后自动调用 KSP 回收载具。
+- `StartCinematicFlight.cmd`：一遍式摄影预览；落地芯级保留供拍摄和手动回收。
 - `StartCinematicMaster.cmd`：优先拍中央芯推送、分离、再入和载荷结尾。
 - `StartCinematicBoosters.cmd`：优先拍侧芯分离、同步点火和双箭着陆。
 
@@ -135,6 +137,7 @@ python -m unittest discover -v
 - [回收 V2 说明](RECOVERY_V2.md)
 - [三芯实飞记录](HEAVY_FLIGHT_TEST_20260922.md)
 - [摄影与剪辑方案](CINEMATIC_PLAN.md)
+- [PRE 载荷抖动修复与安装](PRE_PAYLOAD_FIX.md)
 
 ## 已知限制
 

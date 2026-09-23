@@ -436,6 +436,35 @@ class Guidance:
         return target, throttle, (height, vs, hs, target_vs, vertical_alignment)
 
 
+# 三枚后台芯级可能几乎同时落稳；逐个调用 KSP 的回收接口。
+AUTO_RECOVER_LOCK = threading.Lock()
+
+
+def recover_landed_vessel(sc, vessel, payload_tag, require_land):
+    """只在落稳验收完成后调用。当前镜头若在芯级上，先交给载荷。"""
+    with AUTO_RECOVER_LOCK:
+        landed = sc.VesselSituation.landed
+        splashed = sc.VesselSituation.splashed
+        if vessel.situation not in ((landed,) if require_land else (landed, splashed)):
+            raise RuntimeError("载具不处于允许回收的着陆状态")
+        if sc.active_vessel == vessel:
+            payload = find_booster(sc, payload_tag)
+            if payload is None or payload == vessel:
+                raise RuntimeError("当前正在观察芯级且找不到载荷；保留载具供手动回收")
+            sc.active_vessel = payload
+            if sc.active_vessel != payload:
+                raise RuntimeError("无法切回载荷；保留芯级供手动回收")
+        name = vessel.name
+        vessel.recover()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if not any(candidate.name == name for candidate in sc.vessels):
+                print(f"已由 KSP 回收载具：{name}")
+                return
+            time.sleep(.2)
+        raise RuntimeError(f"已发送回收指令，但 KSP 中仍能找到 {name}；请手动确认")
+
+
 def main(argv=None, *, connection=None, selected_vessel=None,
          selected_vessel_name=None, ignition_barrier=None,
          ignition_label=None):
@@ -447,6 +476,8 @@ def main(argv=None, *, connection=None, selected_vessel=None,
     parser.add_argument("--target-longitude", type=float)
     parser.add_argument("--require-land", action="store_true")
     parser.add_argument("--activate-engines", action="store_true", help="读档后明确激活当前载具上的可用发动机，不分级")
+    parser.add_argument("--auto-recover", action="store_true",
+                        help="完整落稳 8 秒后调用 KSP 回收载具；默认保留载具")
     parser.add_argument("--background", action="store_true",
                         help="回收非活动载具；用于让玩家继续控制载荷")
     parser.add_argument("--allow-warp", action="store_true",
@@ -539,6 +570,7 @@ def main(argv=None, *, connection=None, selected_vessel=None,
     controlling = False
     throttle_driver = None
     vessel = None
+    landed_success = False
     try:
         sc = conn.space_center
         if selected_vessel is not None and selected_vessel_name is not None:
@@ -801,13 +833,15 @@ def main(argv=None, *, connection=None, selected_vessel=None,
                           f"发动机 {remaining_engines}/{initial_engine_count}，"
                           f"纬度={flight.latitude:.8f}，经度={flight.longitude:.8f}，"
                           f"目标三维距离={miss} m；定点成功仍需确认跑道范围。")
+                    landed_success = True
                     if args.physics_range > 0:
                         # 不在单枚芯级落稳时恢复默认范围。physics_range 会影响
                         # KSP 对远距离载具的装载；此时载荷和中央芯通常还在数十
                         # 千米外，过早缩小范围会让刚落地的侧芯被卸载，甚至使仍在
                         # 末端制导的另一枚侧芯丢失 Vessel 对象。范围由发射总控在
-                        # 脚本结束后也保持 400 km，直到玩家在游戏中手动回收。
-                        print(f"[{log_tag}] 保持远距离物理范围，等待玩家手动回收")
+                        # 落稳后保持 2000 km，直到自动或手动回收成功。
+                        print(f"[{log_tag}] 保持远距离物理范围，"
+                              + ("准备自动回收" if args.auto_recover else "等待玩家手动回收"))
                     break
                 if now - contact_start >= 30.0:
                     tilt = math.degrees(math.acos(clamp(upright_dot, -1.0, 1.0)))
@@ -950,6 +984,11 @@ def main(argv=None, *, connection=None, selected_vessel=None,
                 s.remove()
             except Exception:
                 pass
+        if landed_success and args.auto_recover and vessel is not None:
+            try:
+                recover_landed_vessel(sc, vessel, args.payload_tag, args.require_land)
+            except Exception as exc:
+                print(f"自动回收未确认：{exc}；请在追踪站核实，必要时手动回收")
         if connection is None:
             conn.close()
 
