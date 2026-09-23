@@ -60,12 +60,6 @@ class HeavyLaunchTests(unittest.TestCase):
         self.assertIn("--require-land", args)
         self.assertEqual(args[args.index("--aero-target-tilt") + 1], "20")
 
-    def test_daily_recovery_passes_auto_recover_only_when_enabled(self):
-        ordinary = recovery_args("booster_left", 16, auto_recover=True)
-        filming = recovery_args("booster_left", 16)
-        self.assertIn("--auto-recover", ordinary)
-        self.assertNotIn("--auto-recover", filming)
-
     def test_core_recovery_explicitly_disables_boostback(self):
         args = recovery_args("booster_core", 16, target=(0, -38.5),
                              no_boostback=True)

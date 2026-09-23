@@ -24,7 +24,7 @@ exit /b 1
 
 :run
 rem Normal heavy flight.
-"%KSP_PYTHON%" %KSP_PYTHON_ARGS% run_with_local_deps.py MyHeavyLaunch.py --execute --auto-recover
+"%KSP_PYTHON%" %KSP_PYTHON_ARGS% run_with_local_deps.py MyHeavyLaunch.py --execute
 set "KSP_EXIT=%ERRORLEVEL%"
 echo.
 if not "%KSP_EXIT%"=="0" echo Task stopped with error %KSP_EXIT%.

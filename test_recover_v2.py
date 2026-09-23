@@ -1,12 +1,9 @@
 """离线验证控制数学；不会导入 krpc 或连接游戏。"""
 import math
 import unittest
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
 
 from MyRecoverV2 import (Config, Guidance, deploy_landing_legs,
-                         landing_legs_deployed, dot, norm, slew_direction,
-                         recover_landed_vessel)
+                         landing_legs_deployed, dot, norm, slew_direction)
 
 
 class FakeLeg:
@@ -303,40 +300,6 @@ class RecoveryTests(unittest.TestCase):
             self.assertLessEqual(altitude, 16, (initial_height, speed))
             # 离散积分在接触瞬间可能略高于指令值；仍限制在支腿可承受的范围。
             self.assertLess(abs(speed), 5.0, (initial_height, speed))
-
-    def test_auto_recover_removes_stable_background_vessel(self):
-        situation = SimpleNamespace(landed="landed", splashed="splashed")
-        active = object()
-        booster = SimpleNamespace(situation="landed", name="Codex booster_left")
-        sc = SimpleNamespace(VesselSituation=situation, active_vessel=active,
-                             vessels=[booster])
-        booster.recover = Mock(side_effect=lambda: sc.vessels.clear())
-        recover_landed_vessel(sc, booster, "payload", True)
-        booster.recover.assert_called_once_with()
-        self.assertEqual(sc.vessels, [])
-        self.assertIs(sc.active_vessel, active)
-
-    def test_auto_recover_refuses_a_flying_vessel(self):
-        situation = SimpleNamespace(landed="landed", splashed="splashed")
-        booster = SimpleNamespace(situation="flying", name="Codex booster_left",
-                                  recover=Mock())
-        sc = SimpleNamespace(VesselSituation=situation, active_vessel=object(),
-                             vessels=[booster])
-        with self.assertRaises(RuntimeError):
-            recover_landed_vessel(sc, booster, "payload", True)
-        booster.recover.assert_not_called()
-
-    def test_auto_recover_switches_view_from_landed_booster(self):
-        situation = SimpleNamespace(landed="landed", splashed="splashed")
-        payload = object()
-        booster = SimpleNamespace(situation="landed", name="Codex booster_left")
-        sc = SimpleNamespace(VesselSituation=situation, active_vessel=booster,
-                             vessels=[booster])
-        booster.recover = Mock(side_effect=lambda: sc.vessels.clear())
-        with patch("MyRecoverV2.find_booster", return_value=payload):
-            recover_landed_vessel(sc, booster, "payload", True)
-        self.assertIs(sc.active_vessel, payload)
-        booster.recover.assert_called_once_with()
 
 
 if __name__ == "__main__":

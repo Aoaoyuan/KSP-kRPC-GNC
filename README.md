@@ -64,10 +64,8 @@ python MyHeavyLaunch.py
 确认火箭处于发射前状态、`current_stage == 5` 后才能执行任务：
 
 ```bash
-python MyHeavyLaunch.py --execute --auto-recover
+python MyHeavyLaunch.py --execute
 ```
-
-若要保留落地芯级供拍摄或手动回收，省略 `--auto-recover`。
 
 ## Windows 双击入口
 
@@ -86,8 +84,8 @@ set "KSP_PYTHON=C:\Path\To\Python\python.exe"
 
 可用入口：
 
-- `StartHeavyFlight.cmd`：普通三芯自动任务；三枚芯级完整落稳 8 秒后自动调用 KSP 回收载具。
-- `StartCinematicFlight.cmd`：一遍式摄影预览；落地芯级保留供拍摄和手动回收。
+- `StartHeavyFlight.cmd`：普通三芯自动任务。
+- `StartCinematicFlight.cmd`：一遍式摄影预览。
 - `StartCinematicMaster.cmd`：优先拍中央芯推送、分离、再入和载荷结尾。
 - `StartCinematicBoosters.cmd`：优先拍侧芯分离、同步点火和双箭着陆。
 
@@ -142,6 +140,7 @@ python -m unittest discover -v
 ## 已知限制
 
 - 空气动力学、模组帧率和 Physics Range Extender 会影响落点重复性。
+- KSP/kRPC 的正式“回收载具”会离开飞行场景；任务飞行期间不自动调用。三枚芯级落稳后仍留在存档中，玩家可在完成载荷任务后从追踪站回收。
 - 摄影模式需要切换活动载具以使用 Stock 相机；复杂存档中可能比普通模式产生更多负载。
 - 中央芯下程目标目前允许公里级误差，重点是结构完整和不被再入烧毁。
 - 载荷分离后的圆化、轨道规划和任务载荷控制有意留给玩家。
