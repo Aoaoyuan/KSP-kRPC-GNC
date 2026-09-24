@@ -802,12 +802,10 @@ def main(argv=None, *, connection=None, selected_vessel=None,
                           f"纬度={flight.latitude:.8f}，经度={flight.longitude:.8f}，"
                           f"目标三维距离={miss} m；定点成功仍需确认跑道范围。")
                     if args.physics_range > 0:
-                        # 不在单枚芯级落稳时恢复默认范围。physics_range 会影响
-                        # KSP 对远距离载具的装载；此时载荷和中央芯通常还在数十
-                        # 千米外，过早缩小范围会让刚落地的侧芯被卸载，甚至使仍在
-                        # 末端制导的另一枚侧芯丢失 Vessel 对象。范围由发射总控在
-                        # 脚本结束后也保持 400 km，直到玩家在游戏中手动回收。
-                        print(f"[{log_tag}] 保持远距离物理范围，等待玩家手动回收")
+                        # 飞行中的其它芯级继续保留远距物理范围。新版 PRE 会在
+                        # 玩家控制太空载荷时，让已落稳且远离镜头的芯级使用默认
+                        # 加载范围，解除 KSP 精度保护的阻塞；载具仍留在存档中。
+                        print(f"[{log_tag}] 载具落稳并保留；远处落地芯级的物理卸载由新版 PRE 管理")
                     break
                 if now - contact_start >= 30.0:
                     tilt = math.degrees(math.acos(clamp(upright_dot, -1.0, 1.0)))

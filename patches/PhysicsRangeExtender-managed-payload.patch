@@ -1,5 +1,5 @@
 diff --git a/PhysicsRangeExtender/PhysicsRangeExtender.cs b/PhysicsRangeExtender/PhysicsRangeExtender.cs
-index f4d14e2..384f41e 100644
+index f4d14e2..44b2394 100644
 --- a/PhysicsRangeExtender/PhysicsRangeExtender.cs
 +++ b/PhysicsRangeExtender/PhysicsRangeExtender.cs
 @@ -1,4 +1,4 @@
@@ -8,9 +8,77 @@ index f4d14e2..384f41e 100644
  using System.Collections.Generic;
  using System.Linq;
  using UnityEngine;
-@@ -93,7 +93,8 @@ namespace PhysicsRangeExtender
+@@ -14,6 +14,11 @@ namespace PhysicsRangeExtender
+ 
+         private static readonly float _initialClippingPlane = 0.21f;
+         private bool _isSuborbital;
++        private readonly Dictionary<Guid, double> _landedSince = new Dictionary<Guid, double>();
++        private static readonly HashSet<Guid> SettledVessels = new HashSet<Guid>();
++        private float _nextLandedRangeCheck;
++        private float _nextPrecisionLog;
++
+ 
+         public List<Vessel> VesselToFreeze { get; set; } = new List<Vessel>();
+ 
+@@ -22,21 +27,23 @@ namespace PhysicsRangeExtender
+ 
+         private void Start()
+         {
+-            if (!PreSettings.ConfigLoaded) return;
+-            if (!PreSettings.ModEnabled) return;
+-
+-            TerrainExtender.UpdateSphere();
+-            UpdateRanges();
+-
++            SettledVessels.Clear();
++            _unloadDueToReferenceFrameApplied = false;
++            // Register even when disabled at scene entry: enabling PRE later must
++            // still handle switches and newly separated vessels.
+             GameEvents.onVesselCreate.Add(ApplyPhysRange);
+             GameEvents.onVesselLoaded.Add(ApplyPhysRangeOnLoad);
+             GameEvents.onVesselSwitching.Add(ApplyPhysRange);
+             GameEvents.onVesselGoOffRails.Add(ApplyPhysRange);
+             GameEvents.onVesselSituationChange.Add(SituationChangeFixes);
++            if (!PreSettings.ConfigLoaded || !PreSettings.ModEnabled) return;
++            TerrainExtender.UpdateSphere();
++            UpdateRanges();
+         }
+ 
+         private void SituationChangeFixes(GameEvents.HostedFromToAction<Vessel, Vessel.Situations> data)
+         {
++            if (!PreSettings.ModEnabled) return;
+             RefreshPqsWhenApproaching(data);
+         }
+ 
+@@ -60,19 +67,20 @@ namespace PhysicsRangeExtender
+ 
+         private void ApplyPhysRangeOnLoad(Vessel data)
+         {
++            if (!PreSettings.ModEnabled) return;
+             NewVesselIsLoaded(data);
+             ApplyRangesToVessels();
+         }
+ 
+         private void OnDestroy()
+         {
+-            if (!PreSettings.ConfigLoaded) return;
+-            if (!PreSettings.ModEnabled) return;
++            // Always unsubscribe, including when the user disabled PRE in flight.
+             GameEvents.onVesselCreate.Remove(ApplyPhysRange);
+             GameEvents.onVesselLoaded.Remove(ApplyPhysRangeOnLoad);
+             GameEvents.onVesselSwitching.Remove(ApplyPhysRange);
+             GameEvents.onVesselGoOffRails.Remove(ApplyPhysRange);
+-            GameEvents.onVesselSituationChange.Add(SituationChangeFixes);
++            GameEvents.onVesselSituationChange.Remove(SituationChangeFixes);
++            SettledVessels.Clear();
+         }
+ 
+ 
+@@ -92,13 +100,15 @@ namespace PhysicsRangeExtender
+ 
          private void ApplyPhysRange(Vessel data0, Vessel data1)
          {
++            if (!PreSettings.ModEnabled) return;
              CheckIfFreezeIsNeeded(data0, data1);
 -            ApplyRangesToVessels();
 +            // Switching fires before ActiveVessel is always updated.
@@ -18,7 +86,105 @@ index f4d14e2..384f41e 100644
          }
  
          private void CheckIfFreezeIsNeeded(Vessel from, Vessel to)
-@@ -276,15 +277,52 @@ namespace PhysicsRangeExtender
+         {
+-            if (from.Landed && to.situation >= Vessel.Situations.SUB_ORBITAL)
++            if (from != null && to != null && from.Landed && to.situation >= Vessel.Situations.SUB_ORBITAL)
+             {
+                 TerrainExtender.ActivateNoCrashDamage();
+                 from.SetWorldVelocity(Vector3d.zero);
+@@ -161,11 +171,81 @@ namespace PhysicsRangeExtender
+         {
+             if (!PreSettings.ConfigLoaded) return;
+             if (!PreSettings.ModEnabled) return;
++            UpdateLandedRangePolicy();
+             UpdateNearClipPlane();
+             AvoidReferenceFrameChangeIssues();
+             FreezeLandedVesselWhenSwitching();
+         }
+ 
++        // A loaded landed vessel blocks BOTH Krakensbane and FloatingOrigin in
++        // KSP 1.12.x, even when packed. Shrinking only the active payload range
++        // cannot fix that. Retire settled remote boosters from physics, not from
++        // the save. Flying/descending boosters must retain their extended range.
++        private void UpdateLandedRangePolicy()
++        {
++            if (!FlightGlobals.ready || Time.realtimeSinceStartup < _nextLandedRangeCheck) return;
++            _nextLandedRangeCheck = Time.realtimeSinceStartup + 1f;
++            var now = Planetarium.GetUniversalTime();
++            var vessels = FlightGlobals.Vessels.ToArray();
++            var ids = new HashSet<Guid>(vessels.Where(v => v != null).Select(v => v.id));
++            foreach (var id in _landedSince.Keys.Where(id => !ids.Contains(id)).ToArray())
++                _landedSince.Remove(id);
++            SettledVessels.RemoveWhere(id => !ids.Contains(id));
++            foreach (var vessel in vessels)
++            {
++                if (vessel == null) continue;
++                if (!vessel.LandedOrSplashed)
++                {
++                    _landedSince.Remove(vessel.id);
++                    if (SettledVessels.Remove(vessel.id)) ApplyRangesToVessels();
++                    continue;
++                }
++                if (!IsManagedRecoveryVessel(vessel)) continue;
++                // Do not load saved craft just to inspect them. A loaded packed
++                // landed craft also blocks Krakensbane, so it must be eligible.
++                if (!vessel.loaded) continue;
++                if (!vessel.packed &&
++                    (!(vessel.srfSpeed <= 0.5) || !(vessel.angularVelocity.magnitude <= 0.05)))
++                {
++                    _landedSince.Remove(vessel.id);
++                    if (SettledVessels.Remove(vessel.id)) ApplyRangesToVessels();
++                    continue;
++                }
++                double since;
++                if (!_landedSince.TryGetValue(vessel.id, out since) || now < since)
++                    _landedSince[vessel.id] = now;
++                else if (now - since >= 8.0 && SettledVessels.Add(vessel.id))
++                    Debug.Log("[PhysicsRangeExtender]: Settled vessel eligible for stock ranges: " + vessel.vesselName);
++            }
++            // Reapply every second, not once when the payload reaches space:
++            // boosters can land much later, and Python may previously have set
++            // a long radius. Event callbacks use the same policy below.
++            var active = FlightGlobals.ActiveVessel;
++            foreach (var vessel in vessels)
++                if (ShouldParkLandedVessel(vessel, active))
++                    vessel.vesselRanges = new VesselRanges();
++            if (active != null && HasTag(active, "payload") &&
++                Time.realtimeSinceStartup >= _nextPrecisionLog)
++            {
++                _nextPrecisionLog = Time.realtimeSinceStartup + 10f;
++                var blockers = FlightGlobals.VesselsLoaded.Where(v => v != active &&
++                    (v.LandedOrSplashed || v.radarAltitude < 200.0));
++                Debug.Log("[PRE Precision] active=" + active.vesselName +
++                    " worldDistance=" + active.transform.position.magnitude.ToString("F1") +
++                    " frameSpeed=" + Krakensbane.GetFrameVelocity().magnitude.ToString("F1") +
++                    " blockers=" + string.Join(";", blockers.Select(v => v.vesselName).ToArray()));
++            }
++        }
++
++        private static bool ShouldParkLandedVessel(Vessel vessel, Vessel active)
++        {
++            return vessel != null && active != null && vessel != active &&
++                   vessel.LandedOrSplashed && SettledVessels.Contains(vessel.id) &&
++                   active.mainBody == vessel.mainBody && !active.LandedOrSplashed &&
++                   active.altitude > Math.Max(10000.0, active.mainBody.atmosphereDepth) &&
++                   Vector3d.Distance(vessel.GetWorldPos3D(), active.GetWorldPos3D()) > 10000.0;
++        }
++
+         private void FreezeLandedVesselWhenSwitching()
+         {
+             VesselToFreeze.RemoveAll(x => x == null);
+@@ -253,7 +333,8 @@ namespace PhysicsRangeExtender
+         public static void UpdateRanges(bool updatingFromUi = false)
+         {
+             Debug.Log("[PhysicsRangeExtender]:  Updating ranges");
+-            FloatingOrigin.fetch.threshold = Mathf.Pow(PreSettings.GlobalRange * 1000 * 1.20f, 2);
++            // Load distance is not a floating-origin distance. Leave KSP's
++            // precision settings intact; never write a squared range to threshold.
+ 
+             if (updatingFromUi) TerrainExtender.UpdateSphere();
+ 
+@@ -276,15 +357,57 @@ namespace PhysicsRangeExtender
              ApplyRangesToVessels(updatingFromUi);
          }
  
@@ -59,6 +225,11 @@ index f4d14e2..384f41e 100644
 +                    // load an orbiting station merely because a booster is landing
 +                    // on the same celestial body.
 +                    var vessel = FlightGlobals.Vessels[i];
++                    if (ShouldParkLandedVessel(vessel, activeVessel))
++                    {
++                        vessel.vesselRanges = new VesselRanges();
++                        continue;
++                    }
 +                    if (!IsManagedRecoveryVessel(vessel)) continue;
 +
 +                    // Active payloads need no long load radius. Background payloads
@@ -72,7 +243,7 @@ index f4d14e2..384f41e 100644
                      // check to avoid landed vessels to be destroyed when the active vessel is sub-orbital
                      if (FlightGlobals.Vessels[i].LandedOrSplashed && !ShouldLandedVesselsBeLoaded()) continue;
                      // 
-@@ -326,4 +364,4 @@ namespace PhysicsRangeExtender
+@@ -326,4 +449,4 @@ namespace PhysicsRangeExtender
              }
          }
      }
