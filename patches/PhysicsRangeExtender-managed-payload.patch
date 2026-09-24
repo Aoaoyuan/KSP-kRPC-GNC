@@ -1,5 +1,5 @@
 diff --git a/PhysicsRangeExtender/PhysicsRangeExtender.cs b/PhysicsRangeExtender/PhysicsRangeExtender.cs
-index f4d14e2..44b2394 100644
+index f4d14e2..347fe73 100644
 --- a/PhysicsRangeExtender/PhysicsRangeExtender.cs
 +++ b/PhysicsRangeExtender/PhysicsRangeExtender.cs
 @@ -1,4 +1,4 @@
@@ -20,7 +20,7 @@ index f4d14e2..44b2394 100644
  
          public List<Vessel> VesselToFreeze { get; set; } = new List<Vessel>();
  
-@@ -22,21 +27,23 @@ namespace PhysicsRangeExtender
+@@ -22,21 +27,24 @@ namespace PhysicsRangeExtender
  
          private void Start()
          {
@@ -30,6 +30,7 @@ index f4d14e2..44b2394 100644
 -            TerrainExtender.UpdateSphere();
 -            UpdateRanges();
 -
++            Debug.Log("[PRE Precision] build=20260924-identity-v3 enabled=" + PreSettings.ModEnabled);
 +            SettledVessels.Clear();
 +            _unloadDueToReferenceFrameApplied = false;
 +            // Register even when disabled at scene entry: enabling PRE later must
@@ -50,7 +51,7 @@ index f4d14e2..44b2394 100644
              RefreshPqsWhenApproaching(data);
          }
  
-@@ -60,19 +67,20 @@ namespace PhysicsRangeExtender
+@@ -60,19 +68,20 @@ namespace PhysicsRangeExtender
  
          private void ApplyPhysRangeOnLoad(Vessel data)
          {
@@ -74,7 +75,7 @@ index f4d14e2..44b2394 100644
          }
  
  
-@@ -92,13 +100,15 @@ namespace PhysicsRangeExtender
+@@ -92,13 +101,15 @@ namespace PhysicsRangeExtender
  
          private void ApplyPhysRange(Vessel data0, Vessel data1)
          {
@@ -92,7 +93,7 @@ index f4d14e2..44b2394 100644
              {
                  TerrainExtender.ActivateNoCrashDamage();
                  from.SetWorldVelocity(Vector3d.zero);
-@@ -161,11 +171,81 @@ namespace PhysicsRangeExtender
+@@ -161,11 +172,85 @@ namespace PhysicsRangeExtender
          {
              if (!PreSettings.ConfigLoaded) return;
              if (!PreSettings.ModEnabled) return;
@@ -146,6 +147,10 @@ index f4d14e2..44b2394 100644
 +            // boosters can land much later, and Python may previously have set
 +            // a long radius. Event callbacks use the same policy below.
 +            var active = FlightGlobals.ActiveVessel;
++            // Tags can be assigned after onVesselCreate. Refresh the current
++            // payload range without relying on another switch/load event.
++            if (active != null && HasTag(active, "payload"))
++                active.vesselRanges = new VesselRanges();
 +            foreach (var vessel in vessels)
 +                if (ShouldParkLandedVessel(vessel, active))
 +                    vessel.vesselRanges = new VesselRanges();
@@ -174,7 +179,7 @@ index f4d14e2..44b2394 100644
          private void FreezeLandedVesselWhenSwitching()
          {
              VesselToFreeze.RemoveAll(x => x == null);
-@@ -253,7 +333,8 @@ namespace PhysicsRangeExtender
+@@ -253,7 +338,8 @@ namespace PhysicsRangeExtender
          public static void UpdateRanges(bool updatingFromUi = false)
          {
              Debug.Log("[PhysicsRangeExtender]:  Updating ranges");
@@ -184,7 +189,7 @@ index f4d14e2..44b2394 100644
  
              if (updatingFromUi) TerrainExtender.UpdateSphere();
  
-@@ -276,15 +357,57 @@ namespace PhysicsRangeExtender
+@@ -276,15 +362,85 @@ namespace PhysicsRangeExtender
              ApplyRangesToVessels(updatingFromUi);
          }
  
@@ -197,13 +202,41 @@ index f4d14e2..44b2394 100644
 +        /// </summary>
 +        private static bool HasTag(Vessel vessel, string tag)
 +        {
-+            return vessel != null && vessel.parts != null &&
-+                   vessel.parts.Any(part => part != null && part.tag == tag);
++            // kRPC Part.Tag is KOSNameTag.nameTag, NOT Unity Component.tag.
++            // Keep this independent of a hard reference to the kOS/kRPC DLLs.
++            if (vessel == null || vessel.parts == null) return false;
++            foreach (var part in vessel.parts)
++            {
++                if (part == null || part.Modules == null) continue;
++                foreach (PartModule module in part.Modules)
++                {
++                    if (module == null || module.moduleName != "KOSNameTag") continue;
++                    var field = module.GetType().GetField("nameTag");
++                    if (field != null && string.Equals(field.GetValue(module) as string,
++                                                       tag, StringComparison.Ordinal))
++                        return true;
++                }
++            }
++            return false;
++        }
++
++        private static bool HasManagedBoosterName(Vessel vessel)
++        {
++            // RecoveryManager names exactly these three roles plus a 10-hex ID.
++            // Tags can disappear during separation; the vessel name is persistent.
++            // Never match arbitrary prefixes or debris suffixes.
++            if (vessel == null || string.IsNullOrEmpty(vessel.vesselName)) return false;
++            var pieces = vessel.vesselName.Split(' ');
++            return pieces.Length == 3 && pieces[0] == "Codex" &&
++                   (pieces[1] == "booster_left" || pieces[1] == "booster_right" ||
++                    pieces[1] == "booster_core") && pieces[2].Length == 10 &&
++                   pieces[2].All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
 +        }
 +
 +        private static bool IsManagedRecoveryVessel(Vessel vessel)
 +        {
-+            return HasTag(vessel, "booster_left") ||
++            return HasManagedBoosterName(vessel) ||
++                   HasTag(vessel, "booster_left") ||
 +                   HasTag(vessel, "booster_right") ||
 +                   HasTag(vessel, "booster_core") ||
 +                   HasTag(vessel, "payload");
@@ -243,7 +276,7 @@ index f4d14e2..44b2394 100644
                      // check to avoid landed vessels to be destroyed when the active vessel is sub-orbital
                      if (FlightGlobals.Vessels[i].LandedOrSplashed && !ShouldLandedVesselsBeLoaded()) continue;
                      // 
-@@ -326,4 +449,4 @@ namespace PhysicsRangeExtender
+@@ -326,4 +482,4 @@ namespace PhysicsRangeExtender
              }
          }
      }
