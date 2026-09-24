@@ -3,7 +3,8 @@ import unittest
 from types import SimpleNamespace
 
 from MyHeavyLaunch import (core_push_pitch, discover_heavy, heavy_pitch,
-                           post_separation_view, recovery_args)
+                           post_separation_view, recovery_args,
+                           validate_heavy_staging, activate_checked_stage)
 
 
 class HeavyLaunchTests(unittest.TestCase):
@@ -30,6 +31,104 @@ class HeavyLaunchTests(unittest.TestCase):
             reference_frame=object())
         with self.assertRaises(RuntimeError):
             discover_heavy(vessel)
+
+    @classmethod
+    def staged_vessel(cls, core_stage=1, payload_count=1):
+        side_stage = core_stage + 1
+        ignition = side_stage + 1
+        anchors = [cls.part(side_stage, -4), cls.part(side_stage, 4),
+                   cls.part(core_stage, 0), cls.part(-1, 0, 30)]
+        engines = []
+        for stage, x, count, prop, action in (
+                (side_stage, -4, 7, "LiquidFuel", ignition),
+                (side_stage, 4, 7, "LiquidFuel", ignition),
+                (core_stage, 0, 7, "LiquidFuel", ignition),
+                (side_stage, -4, 4, "SolidFuel", side_stage),
+                (side_stage, 4, 4, "SolidFuel", side_stage),
+                (-1, 0, payload_count, "LiquidFuel", 0)):
+            for _ in range(count):
+                part = cls.part(stage, x)
+                part.stage = action
+                engines.append(SimpleNamespace(part=part,
+                    propellants=[SimpleNamespace(name=prop)]))
+        decouplers = [SimpleNamespace(part=SimpleNamespace(stage=stage,
+                        decouple_stage=stage))
+                      for stage in (side_stage, side_stage, core_stage)]
+        return SimpleNamespace(parts=SimpleNamespace(all=anchors, engines=engines,
+            decouplers=decouplers, launch_clamps=[]), reference_frame=object(),
+            control=SimpleNamespace(current_stage=ignition + 1))
+
+    def test_old_and_current_stage_numbers_with_replaceable_payload(self):
+        for core_stage in (1, 2):
+            for payload_count in (0, 1, 4, 6):
+                with self.subTest(core_stage=core_stage, payload_count=payload_count):
+                    v = self.staged_vessel(core_stage, payload_count)
+                    left, right, core, _ = discover_heavy(v)
+                    self.assertEqual(validate_heavy_staging(v, left, right, core),
+                                     ((7, 7, 7, payload_count), (4, 4)))
+
+    def test_engine_reads_can_return_fresh_proxy_objects(self):
+        v = self.staged_vessel()
+        original = v.parts
+
+        class EngineProxy:
+            def __init__(self, engine):
+                self.part = engine.part
+                self.propellants = engine.propellants
+
+        class Parts:
+            all = original.all
+            decouplers = original.decouplers
+            launch_clamps = original.launch_clamps
+
+            @property
+            def engines(self):
+                return [EngineProxy(e) for e in original.engines]
+
+        v.parts = Parts()
+        counts, _ = validate_heavy_staging(v, *discover_heavy(v)[:3])
+        self.assertEqual(counts, (7, 7, 7, 1))
+
+    def test_rejects_early_payload_ignition(self):
+        v = self.staged_vessel()
+        v.parts.engines[-1].part.stage = 1
+        with self.assertRaisesRegex(RuntimeError, "载荷"):
+            validate_heavy_staging(v, *discover_heavy(v)[:3])
+
+    def test_rejects_misstaged_separation_motor(self):
+        v = self.staged_vessel()
+        v.parts.engines[21].part.stage = 3
+        with self.assertRaisesRegex(RuntimeError, "小火箭"):
+            validate_heavy_staging(v, *discover_heavy(v)[:3])
+
+    def test_rejects_misstaged_decoupler(self):
+        v = self.staged_vessel()
+        v.parts.decouplers[0].part.stage = 3
+        with self.assertRaisesRegex(RuntimeError, "分离器"):
+            validate_heavy_staging(v, *discover_heavy(v)[:3])
+
+    def test_rejects_held_launch_clamp(self):
+        v = self.staged_vessel()
+        v.parts.launch_clamps = [SimpleNamespace(part=SimpleNamespace(stage=0))]
+        with self.assertRaisesRegex(RuntimeError, "支架"):
+            validate_heavy_staging(v, *discover_heavy(v)[:3])
+
+    def test_manual_staging_change_never_triggers_another_stage(self):
+        from unittest.mock import Mock
+        v = self.staged_vessel()
+        v.control.activate_next_stage = Mock()
+        v.control.current_stage = 3
+        with self.assertRaises(RuntimeError):
+            activate_checked_stage(v, 3)
+        v.control.activate_next_stage.assert_not_called()
+
+    def test_checked_stage_advances_once(self):
+        from unittest.mock import Mock
+        v = self.staged_vessel()
+        v.control.activate_next_stage = Mock(
+            side_effect=lambda: setattr(v.control, 'current_stage', 3))
+        activate_checked_stage(v, 3)
+        v.control.activate_next_stage.assert_called_once_with()
 
     def test_gravity_turn_is_smooth_and_actually_turns(self):
         samples = [heavy_pitch(h) for h in (0, 500, 4000, 8000, 12000,
