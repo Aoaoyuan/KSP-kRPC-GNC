@@ -87,36 +87,39 @@ def command_parts(vessel):
 
 
 def discover_heavy(vessel):
-    """从控制器的分离级识别三芯，而不是把某个级号当成固定身份。
+    """按控制器、发动机动作级和分离归属识别三芯。
 
-    仍限定为两侧芯同时分离、随后中央芯分离的构型。级号随载荷编辑
-    可以整体变化；无法唯一识别时拒绝猜测，避免把载荷当成回收芯级。
+    decouple_stage=-1 只表示保留根部件的一侧，不代表载荷。把根部件从
+    载荷改到中央芯后，两者的分离归属会交换；分离器的动作级不会交换。
+    用随一级共同点火的七台发动机识别中央芯，避免根据根部件方向猜身份。
     """
-    commands = command_parts(vessel)
     groups = {}
-    for part in commands:
-        if part.decouple_stage >= 0:
-            groups.setdefault(part.decouple_stage, []).append(part)
-    side_stages = [stage for stage, parts in groups.items() if len(parts) == 2]
-    core_stages = [stage for stage, parts in groups.items() if len(parts) == 1]
-    if len(groups) != 2 or len(side_stages) != 1 or len(core_stages) != 1:
-        raise RuntimeError("无法唯一识别三芯：须有同级分离的两个侧芯控制器和独立的中央芯控制器")
-    side_stage, core_stage = side_stages[0], core_stages[0]
-    if side_stage != core_stage + 1:
-        raise RuntimeError("侧芯分离与中央芯分离必须是相邻两级，且侧芯先分离")
-    sides = groups[side_stage]
-    cores = groups[core_stage]
-    payloads = [p for p in commands if p.decouple_stage == -1]
-    if len(sides) != 2 or len(cores) != 1 or not payloads:
-        raise RuntimeError(
-            f"重型箭结构不匹配：侧芯控制器 {len(sides)}，中央芯控制器 {len(cores)}，"
-            f"不随芯级分离的控制器 {len(payloads)}")
-    sides.sort(key=lambda p: p.position(vessel.reference_frame)[0])
-    if not (sides[0].position(vessel.reference_frame)[0] < 0 <
-            sides[1].position(vessel.reference_frame)[0]):
-        raise RuntimeError("两个侧芯须位于当前载具参考系 X 轴两侧")
-    payload = max(payloads, key=lambda p: p.position(vessel.reference_frame)[1])
-    return sides[0], sides[1], cores[0], payload
+    for part in command_parts(vessel):
+        groups.setdefault(part.decouple_stage, []).append(part)
+    matches = []
+    for side_stage, sides in groups.items():
+        core_stage = side_stage - 1  # 实际分离事件编号，不是中央芯的部件归属
+        if side_stage < 1 or len(sides) != 2:
+            continue
+        if set(groups) != {side_stage, core_stage, -1}:
+            continue
+        for core_group, payload_group in ((core_stage, -1), (-1, core_stage)):
+            cores, payloads = groups[core_group], groups[payload_group]
+            engines = engines_for(vessel, core_group, propellant="LiquidFuel")
+            if (len(cores) == 1 and len(engines) == 7 and
+                    all(e.part.stage == side_stage + 1 for e in engines)):
+                ordered_sides = sorted(sides, key=lambda p: p.position(vessel.reference_frame)[0])
+                if not (ordered_sides[0].position(vessel.reference_frame)[0] < 0 <
+                        ordered_sides[1].position(vessel.reference_frame)[0]):
+                    continue
+                payload = max(payloads, key=lambda p: p.position(vessel.reference_frame)[1])
+                matches.append((*ordered_sides, cores[0], payload))
+    if len(matches) != 1:
+        detail = ", ".join(f"归属 {stage}: {len(parts)} 个控制器"
+                           for stage, parts in sorted(groups.items()))
+        raise RuntimeError("无法唯一识别三芯：需要两个同级侧芯控制器，以及随一级点火的"
+                           f"七发动机中央芯和独立载荷；实际 {detail}")
+    return matches[0]
 
 
 def branch_parts(vessel, decouple_stage, side=0):
@@ -176,20 +179,23 @@ def engines_for(vessel, decouple_stage, side=0, propellant=None):
 def validate_heavy_staging(vessel, left, right, core):
     """只读核对即将执行的三个事件，返回发动机计数供预检显示。
 
-    KSP 的 current_stage 是下一次实际执行级号加一。先根据芯级控制器
-    得到分离级，再核对发动机和分离器的真实动作级；不能仅把旧数字减一。
+    KSP 的 current_stage 是下一次实际执行级号加一。侧芯分离之后执行
+    中央芯分离；中央芯部件归属可以是该事件编号，也可以是 -1（保留根部件）。
+    两者分别用于分级和燃料/发动机查询，不能混用。实际动作仍逐项校验。
     载荷发动机数量不限，但点火必须安排在中央芯分离之后，由玩家执行。
     """
-    side_stage, core_stage = left.decouple_stage, core.decouple_stage
+    side_stage, core_group = left.decouple_stage, core.decouple_stage
+    core_stage = side_stage - 1
+    payload_group = core_stage if core_group == -1 else -1
     ignition_stage = side_stage + 1
-    if right.decouple_stage != side_stage or side_stage != core_stage + 1:
+    if right.decouple_stage != side_stage or core_group not in (-1, core_stage):
         raise RuntimeError("三芯分离顺序不匹配")
     if vessel.control.current_stage != ignition_stage + 1:
         raise RuntimeError(f"下一次必须执行点火级 {ignition_stage}；当前 current_stage="
                            f"{vessel.control.current_stage}")
     groups = [engines_for(vessel, side_stage, -1, "LiquidFuel"),
               engines_for(vessel, side_stage, 1, "LiquidFuel"),
-              engines_for(vessel, core_stage, propellant="LiquidFuel")]
+              engines_for(vessel, core_group, propellant="LiquidFuel")]
     counts = tuple(map(len, groups))
     if counts != (7, 7, 7):
         raise RuntimeError(f"当前回收参数仅标定三芯各 7 台液体发动机，实际 {counts}")
@@ -207,7 +213,7 @@ def validate_heavy_staging(vessel, left, right, core):
     for engine in vessel.parts.engines:
         part = engine.part
         propellants = {p.name for p in engine.propellants}
-        is_core = part.decouple_stage == core_stage and "LiquidFuel" in propellants
+        is_core = part.decouple_stage == core_group and "LiquidFuel" in propellants
         is_side = (part.decouple_stage == side_stage and
                    part.position(vessel.reference_frame)[0] != 0 and
                    bool(propellants & {"LiquidFuel", "SolidFuel"}))
@@ -216,13 +222,13 @@ def validate_heavy_staging(vessel, left, right, core):
     decouplers = vessel.parts.decouplers
     if (sum(d.part.stage == side_stage and d.part.decouple_stage == side_stage
             for d in decouplers) != 2 or
-        sum(d.part.stage == core_stage and d.part.decouple_stage == core_stage
+        sum(d.part.stage == core_stage and d.part.decouple_stage == core_group
             for d in decouplers) != 1 or
         sum(d.part.stage >= core_stage for d in decouplers) != 3):
         raise RuntimeError("自动分级必须对应两个侧芯分离器、一个中央芯分离器，且不能提前分离其他部件")
     if any(c.part.stage != ignition_stage for c in vessel.parts.launch_clamps):
         raise RuntimeError("发射支架必须安排在三芯点火级释放")
-    return counts + (len(engines_for(vessel, -1, propellant="LiquidFuel")),), tuple(map(len, separators))
+    return counts + (len(engines_for(vessel, payload_group, propellant="LiquidFuel")),), tuple(map(len, separators))
 
 
 def activate_checked_stage(vessel, target_stage):
@@ -323,11 +329,12 @@ def fly(args, conn, vessel, left, right, core, payload):
     manager = RecoveryManager()
     separated_side = separated_core = False
     # 在分离重建 Vessel 之前保存编号，整个任务共用这份已校验的映射。
-    side_stage, core_stage = left.decouple_stage, core.decouple_stage
+    side_stage, core_group = left.decouple_stage, core.decouple_stage
+    core_stage = side_stage - 1
     ignition_stage = side_stage + 1
     left_parts = branch_parts(vessel, side_stage, -1)
     right_parts = branch_parts(vessel, side_stage, 1)
-    core_parts = branch_parts(vessel, core_stage)
+    core_parts = branch_parts(vessel, core_group)
     start_ut = sc.ut
     # 用户要求载荷保持正东轨道，因此上升和中央芯推送全程固定 90°航向。
     # 中央芯落区只由分离后的回收制导调整，绝不借发射航向改变载荷轨道面。
@@ -409,7 +416,7 @@ def fly(args, conn, vessel, left, right, core, payload):
         core_vessel = core.vessel
         # 分离后必须从中央芯所在的新 Vessel 重新解析部件。复用起飞前的
         # core_parts 会触发 kRPC 的空对象错误，并让中央芯和载荷同时失控。
-        core_parts = branch_parts(core_vessel, core_stage)
+        core_parts = branch_parts(core_vessel, core_group)
         if not core_parts:
             raise RuntimeError("侧芯分离后无法重新识别中央芯燃料部件")
         # 侧芯分离后玩家可以切过去观察；中央芯与载荷组合仍必须继续进行
@@ -433,13 +440,13 @@ def fly(args, conn, vessel, left, right, core, payload):
         # 用燃料比例的实测下降率估算剩余燃烧时间。0.0088/s 是此前实飞的
         # 保守初值；几帧后即由本次任务的实际流量低通更新，不依赖发动机型号。
         fuel_rate = 0.0088
-        last_fuel = stage_liquid_fraction(core_vessel, core_stage)
+        last_fuel = stage_liquid_fraction(core_vessel, core_group)
         last_fuel_ut = sc.ut
         while last_fuel > args.core_reserve:
             if not args.allow_warp:
                 restore_one_x(sc)
             now_ut = sc.ut
-            current_fuel = stage_liquid_fraction(core_vessel, core_stage)
+            current_fuel = stage_liquid_fraction(core_vessel, core_group)
             sample_dt = now_ut - last_fuel_ut
             if sample_dt > 0.02:
                 sample_rate = (last_fuel - current_fuel) / sample_dt
@@ -473,7 +480,7 @@ def fly(args, conn, vessel, left, right, core, payload):
                 last_log = sc.ut
             time.sleep(.05)
 
-        core_remaining = stage_liquid_fraction(core_vessel, core_stage)
+        core_remaining = stage_liquid_fraction(core_vessel, core_group)
         throttle.set(0)
         ap.engaged = False
         throttle.close()
@@ -533,7 +540,7 @@ def fly(args, conn, vessel, left, right, core, payload):
 
         # 到这里自动发射任务结束。确保载荷油门为零，但不改变控制点、
         # 不点火上面级、不接管姿态或规划入轨。用户可以
-        # 更换任意载荷，只要仍有一个不随芯级分离的 ModuleCommand 供识别。
+        # 更换载荷；载荷需有独立 ModuleCommand，根部件可以位于任一侧。
         upper.control.throttle = 0.0
         # 当前载荷已经由 KSP 保持物理模拟，额外扩大物理范围会增加结构抖动。
         # 切去看芯级时，PRE 的载具切换事件会给后台载荷恢复远距范围。
@@ -593,13 +600,15 @@ def main(argv=None):
         vessel = ready_vessel(sc)
         left, right, core, payload = discover_heavy(vessel)
         counts, separators = validate_heavy_staging(vessel, left, right, core)
-        side_stage, core_stage = left.decouple_stage, core.decouple_stage
+        side_stage, core_group = left.decouple_stage, core.decouple_stage
+        core_stage = side_stage - 1
         print(f"分级映射：点火 {side_stage + 1} → 侧芯分离 {side_stage} → 中央芯分离 {core_stage}")
+        print(f"部件归属：中央芯 {core_group}，载荷 {payload.decouple_stage}（-1 表示保留根部件的一侧）")
         print(f"识别结果：左/右/中央/上面级液体发动机 = {counts}；"
               f"左右分离小火箭 = {separators}")
         print(f"燃料：左 {100*liquid_fraction(branch_parts(vessel,side_stage,-1)):.1f}% / "
               f"右 {100*liquid_fraction(branch_parts(vessel,side_stage,1)):.1f}% / "
-              f"中央 {100*liquid_fraction(branch_parts(vessel,core_stage)):.1f}%")
+              f"中央 {100*liquid_fraction(branch_parts(vessel,core_group)):.1f}%")
         for name, point in (("左侧回收点", RUNWAY_LEFT), ("右侧回收点", RUNWAY_RIGHT)):
             terrain = vessel.orbit.body.surface_height(*point)
             print(f"{name}: {point[0]}, {point[1]}，地形海拔 {terrain:.1f}m")

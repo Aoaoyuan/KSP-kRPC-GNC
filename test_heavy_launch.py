@@ -21,8 +21,8 @@ class HeavyLaunchTests(unittest.TestCase):
         core = self.part(2, 0)
         capsule = self.part(-1, 0, 20)
         payload = self.part(-1, 0, 30)
-        vessel = SimpleNamespace(parts=SimpleNamespace(
-            all=[right, capsule, core, left, payload]), reference_frame=object())
+        vessel = self.staged_vessel(core_stage=2)
+        vessel.parts.all = [right, capsule, core, left, payload]
         self.assertEqual(discover_heavy(vessel), (left, right, core, payload))
 
     def test_rejects_missing_side_controller(self):
@@ -33,19 +33,21 @@ class HeavyLaunchTests(unittest.TestCase):
             discover_heavy(vessel)
 
     @classmethod
-    def staged_vessel(cls, core_stage=1, payload_count=1):
+    def staged_vessel(cls, core_stage=1, payload_count=1, root_on_core=False):
+        core_group = -1 if root_on_core else core_stage
+        payload_group = core_stage if root_on_core else -1
         side_stage = core_stage + 1
         ignition = side_stage + 1
         anchors = [cls.part(side_stage, -4), cls.part(side_stage, 4),
-                   cls.part(core_stage, 0), cls.part(-1, 0, 30)]
+                   cls.part(core_group, 0), cls.part(payload_group, 0, 30)]
         engines = []
         for stage, x, count, prop, action in (
                 (side_stage, -4, 7, "LiquidFuel", ignition),
                 (side_stage, 4, 7, "LiquidFuel", ignition),
-                (core_stage, 0, 7, "LiquidFuel", ignition),
+                (core_group, 0, 7, "LiquidFuel", ignition),
                 (side_stage, -4, 4, "SolidFuel", side_stage),
                 (side_stage, 4, 4, "SolidFuel", side_stage),
-                (-1, 0, payload_count, "LiquidFuel", 0)):
+                (payload_group, 0, payload_count, "LiquidFuel", 0)):
             for _ in range(count):
                 part = cls.part(stage, x)
                 part.stage = action
@@ -54,6 +56,7 @@ class HeavyLaunchTests(unittest.TestCase):
         decouplers = [SimpleNamespace(part=SimpleNamespace(stage=stage,
                         decouple_stage=stage))
                       for stage in (side_stage, side_stage, core_stage)]
+        decouplers[-1].part.decouple_stage = core_group
         return SimpleNamespace(parts=SimpleNamespace(all=anchors, engines=engines,
             decouplers=decouplers, launch_clamps=[]), reference_frame=object(),
             control=SimpleNamespace(current_stage=ignition + 1))
@@ -66,6 +69,30 @@ class HeavyLaunchTests(unittest.TestCase):
                     left, right, core, _ = discover_heavy(v)
                     self.assertEqual(validate_heavy_staging(v, left, right, core),
                                      ((7, 7, 7, payload_count), (4, 4)))
+
+    def test_root_can_be_on_core_with_multiple_payload_controllers(self):
+        for core_stage in (1, 2):
+            for payload_count in (0, 1, 4, 7):
+                with self.subTest(core_stage=core_stage, payload_count=payload_count):
+                    v = self.staged_vessel(core_stage, payload_count, root_on_core=True)
+                    v.parts.all.extend(self.part(core_stage, 0, y) for y in (20, 22, 24))
+                    left, right, core, payload = discover_heavy(v)
+                    self.assertEqual(core.decouple_stage, -1)
+                    self.assertEqual(payload.decouple_stage, core_stage)
+                    self.assertEqual(validate_heavy_staging(v, left, right, core),
+                                     ((7, 7, 7, payload_count), (4, 4)))
+
+    def test_rerooted_core_still_rejects_payload_ignition_at_separation(self):
+        v = self.staged_vessel(core_stage=2, root_on_core=True)
+        v.parts.engines[-1].part.stage = 2
+        with self.assertRaisesRegex(RuntimeError, "载荷"):
+            validate_heavy_staging(v, *discover_heavy(v)[:3])
+
+    def test_rerooted_core_rejects_wrong_separator_action_stage(self):
+        v = self.staged_vessel(core_stage=2, root_on_core=True)
+        v.parts.decouplers[-1].part.stage = 1
+        with self.assertRaisesRegex(RuntimeError, "分离器"):
+            validate_heavy_staging(v, *discover_heavy(v)[:3])
 
     def test_engine_reads_can_return_fresh_proxy_objects(self):
         v = self.staged_vessel()
