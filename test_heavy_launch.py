@@ -2,7 +2,7 @@
 import unittest
 from types import SimpleNamespace
 
-from MyHeavyLaunch import (core_push_pitch, discover_heavy, heavy_pitch,
+from MyHeavyLaunch import (core_push_pitch, core_recovery_args, discover_heavy, heavy_pitch,
                            post_separation_view, recovery_args,
                            validate_heavy_staging, activate_checked_stage)
 
@@ -186,10 +186,19 @@ class HeavyLaunchTests(unittest.TestCase):
         self.assertIn("--require-land", args)
         self.assertEqual(args[args.index("--aero-target-tilt") + 1], "20")
 
-    def test_core_recovery_explicitly_disables_boostback(self):
-        args = recovery_args("booster_core", 16, target=(0, -38.5),
-                             no_boostback=True)
+    def test_core_recovery_uses_natural_impact_with_safe_manual_warp(self):
+        args = core_recovery_args(16)
         self.assertIn("--no-boostback", args)
+        self.assertIn("--allow-warp", args)
+        for disallowed in ("--target-latitude", "--target-longitude",
+                           "--require-land", "--aero-target-tilt"):
+            self.assertNotIn(disallowed, args)
+        self.assertEqual(args[args.index("--reentry-altitude") + 1], "45000")
+
+    def test_side_recovery_still_targets_runway(self):
+        args = recovery_args("booster_left", 16, target=(-.04855, -74.722))
+        self.assertIn("--target-latitude", args)
+        self.assertIn("--require-land", args)
 
     def test_post_separation_view_preserves_side_booster(self):
         side, combined, upper = object(), object(), object()

@@ -17,11 +17,9 @@ from MyLaunchV2 import RecoveryManager, clamp
 # 编队看起来也不会过分分散。目标都在跑道附近的平地，远离发射塔。
 RUNWAY_LEFT = (-0.04855, -74.72200)
 RUNWAY_RIGHT = (-0.04855, -74.72700)
-# 第 21 次正东弹道完整软着陆在 (约 -0.089°, -33.012°) 的海面。沿同一条
-# 赤道航线向西约 57 km 是一片宽阔大陆，地形扫描确认目标点海拔约 277 m。
-# 发射与载荷交接始终保持 90°正东；中央芯只靠已有再入点火更早减速来缩短
-# 下程距离，不让回收落区改变载荷的轨道方向，也不增加发动机开机次数。
-CORE_CONTINENT = (0.0, -38.5)
+# 中央芯的载荷/燃料变化会改变下程弹道。返场固定坐标会在某些任务里
+# 强迫芯级追一个根本不可达的旧落区，消耗着陆燃料。侧芯继续瞄准跑道；
+# 中央芯则跟随本次自然弹道，允许完整软溅落。
 CORE_HANDOFF_ALTITUDE = 82500.0
 CORE_HANDOFF_VERTICAL_SPEED = 120.0
 
@@ -301,8 +299,7 @@ def recovery_args(tag, leg_offset, *, target=None, allow_warp=False,
         args += ["--target-latitude", str(target[0]),
                   "--target-longitude", str(target[1]), "--require-land"]
     elif require_land:
-        # 中央芯采用自然下程落区，不做耗油的返场闭环；仍要求最终状态必须
-        # 是 landed，使落水、平台未加载或弹道偏离都明确判为失败。
+        # 仅用于明确要求陆地着陆的任务；自然落点的中央芯不启用。
         args.append("--require-land")
     if allow_warp:
         args.append("--allow-warp")
@@ -311,6 +308,20 @@ def recovery_args(tag, leg_offset, *, target=None, allow_warp=False,
     if no_boostback:
         args.append("--no-boostback")
     return args
+
+
+def core_recovery_args(leg_offset):
+    """中央芯按本次自然弹道回收，不绑定经纬度或强迫陆地着陆。
+
+    随载荷变化的交接速度决定下程距离。防热再入点火和末段速度闭环
+    仍保留，水平速度在实际着陆点附近消除；海上完整软溅落也合格。
+    """
+    return recovery_args(
+        "booster_core", leg_offset, allow_warp=True,
+        reentry_off_speed=1220, reentry_altitude=45000,
+        no_boostback=True, max_tilt=28, terminal_tilt=10,
+        gear_lead_seconds=15, gear_max_height=2500,
+        grid_retract_height=3500)
 
 
 def restore_one_x(sc):
@@ -337,7 +348,7 @@ def fly(args, conn, vessel, left, right, core, payload):
     core_parts = branch_parts(vessel, core_group)
     start_ut = sc.ut
     # 用户要求载荷保持正东轨道，因此上升和中央芯推送全程固定 90°航向。
-    # 中央芯落区只由分离后的回收制导调整，绝不借发射航向改变载荷轨道面。
+    # 中央芯的自然落区由分离后的实际状态决定，不借发射航向追固定坐标。
     ascent_heading = 90.0
     try:
         restore_one_x(sc)
@@ -517,28 +528,10 @@ def fly(args, conn, vessel, left, right, core, payload):
               f"{handoff_vertical_speed:.0f}m/s，水平速度 "
               f"{handoff_horizontal_speed:.0f}m/s，"
               f"飞行路径角 {handoff_path_angle:.1f}°，航向 {handoff_heading:.1f}°")
-        # 中央芯不做返场。它的横向速度远高于侧芯，因此仍用一次再入点火
-        # 防热，但在 1100 m/s 关机，少消耗一点着陆燃料。第 19 次在 1.8 km
-        # 才收栅格舵，触水后仍损失 1 片；中央芯改在 3.5 km 收舵，给动画和
-        # 结构卸载留出更充分的时间。此次必须落地，溅落不会再被接受。
-        manager.start("booster_core", recovery_args(
-            "booster_core", args.leg_offset, target=CORE_CONTINENT,
-            # 中央芯交接后开放玩家手动加速；回收器仍在再入前退回 1×。
-            # 侧芯线程保留各自保护，关键回收阶段会否决全局加速。
-            allow_warp=True,
-            # 第 22 次提前到 65 km 会延长动力减速，并在旧控制律下重复点火。
-            # 新弹道本身负责缩短下程；再入点火恢复到 45 km 才启动，速度降到
-            # 1180 m/s 就关机，其余交给大气和栅格舵。控制器另有一次性锁存，
-            # 因而整个再入段最多只启动一次。
-            reentry_off_speed=1220, reentry_altitude=45000,
-            # 中央芯依靠发射弹道自然下程，显式禁止返场点火。第 24 次把高度
-            # 阈值设为 100 km，反而在越过 100 km 后触发返推，白白消耗约 6%
-            # 燃料并把水平速度从约 843 m/s 压到 220 m/s；本开关消除歧义。
-            no_boostback=True, aero_target_tilt=25,
-            max_tilt=28, terminal_tilt=10,
-            gear_lead_seconds=15, gear_max_height=2500,
-            grid_retract_height=3500),
-            selected_vessel=core_only)
+        # 中央芯自然下程，允许玩家在安全滑行段手动加速。末段制导
+        # 只压低实际落点的垂直/水平速度，接受完整陆地着陆或软溅落。
+        manager.start("booster_core", core_recovery_args(args.leg_offset),
+                      selected_vessel=core_only)
 
         # 到这里自动发射任务结束。确保载荷油门为零，但不改变控制点、
         # 不点火上面级、不接管姿态或规划入轨。用户可以
@@ -612,9 +605,7 @@ def main(argv=None):
         for name, point in (("左侧回收点", RUNWAY_LEFT), ("右侧回收点", RUNWAY_RIGHT)):
             terrain = vessel.orbit.body.surface_height(*point)
             print(f"{name}: {point[0]}, {point[1]}，地形海拔 {terrain:.1f}m")
-        core_terrain = vessel.orbit.body.surface_height(*CORE_CONTINENT)
-        print(f"中央芯正东下程大陆目标: {CORE_CONTINENT[0]}, {CORE_CONTINENT[1]}，"
-              f"地形海拔 {core_terrain:.1f}m")
+        print("中央芯回收：跟随本次自然下程落点；陆地软着陆或完整软溅落均接受")
         if not args.execute:
             print("只读检查通过；加 --execute 才会写标签、保存备份并发射。")
             return

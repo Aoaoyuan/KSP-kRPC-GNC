@@ -865,10 +865,13 @@ def main(argv=None, *, connection=None, selected_vessel=None,
                             "载具完整落稳但位于水面，陆地回收任务失败")
                     delta = tuple(t-p for t, p in zip(target_position, position())) if target_position else None
                     miss = norm(delta) if delta else None
+                    landing_note = (f"目标三维距离={miss:.0f} m；定点成功仍需确认跑道范围"
+                                    if miss is not None else
+                                    "自然落点；完整软着陆或软溅落")
                     print(f"连续落稳 8 秒，部件 {remaining_parts}/{initial_part_count}，"
                           f"发动机 {remaining_engines}/{initial_engine_count}，"
                           f"纬度={flight.latitude:.8f}，经度={flight.longitude:.8f}，"
-                          f"目标三维距离={miss} m；定点成功仍需确认跑道范围。")
+                          f"{landing_note}。")
                     if args.physics_range > 0:
                         # 飞行中的其它芯级继续保留远距物理范围。新版 PRE 会在
                         # 玩家控制太空载荷时，让已落稳且远离镜头的芯级使用默认
