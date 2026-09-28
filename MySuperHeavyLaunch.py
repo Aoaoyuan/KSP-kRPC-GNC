@@ -14,14 +14,21 @@ from MyLaunchV2 import RecoveryManager, clamp
 from MyHeavyLaunch import (activate_checked_stage, branch_parts, command_parts,
                            core_push_pitch, heavy_pitch,
                            liquid_fraction, post_separation_view, recovery_args,
-                           restore_one_x, stage_liquid_fraction, upper_engine_at_core_split,
-                           wait_split)
+                           restore_one_x, stage_liquid_fraction, wait_split)
 
 
 # 四个目标沿跑道方向排开。点位只作为返场初值，实际落点须实飞标定。
 RUNWAY_TARGETS = ((-0.04855, -74.7130), (-0.04855, -74.7205),
                   (-0.04855, -74.7280), (-0.04855, -74.7355))
 SIDE_TAGS = tuple(f"booster_side_{i+1}" for i in range(4))
+
+
+def upper_engine_at_core_split(engine, core_stage):
+    """中央芯分离同级激活的上面级发动机只能在交接后由玩家给油门。"""
+    props = {p.name for p in engine.propellants}
+    return (engine.part.stage == core_stage and
+            engine.part.decouple_stage < core_stage and
+            props == {"LiquidFuel", "Oxidizer"})
 
 
 def side_layout(vessel, anchors):
