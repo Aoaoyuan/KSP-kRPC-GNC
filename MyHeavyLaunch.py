@@ -523,7 +523,9 @@ def fly(args, conn, vessel, left, right, core, payload):
         # 结构卸载留出更充分的时间。此次必须落地，溅落不会再被接受。
         manager.start("booster_core", recovery_args(
             "booster_core", args.leg_offset, target=CORE_CONTINENT,
-            allow_warp=args.allow_warp,
+            # 中央芯交接后开放玩家手动加速；回收器仍在再入前退回 1×。
+            # 侧芯线程保留各自保护，关键回收阶段会否决全局加速。
+            allow_warp=True,
             # 第 22 次提前到 65 km 会延长动力减速，并在旧控制律下重复点火。
             # 新弹道本身负责缩短下程；再入点火恢复到 45 km 才启动，速度降到
             # 1180 m/s 就关机，其余交给大气和栅格舵。控制器另有一次性锁存，
@@ -542,14 +544,12 @@ def fly(args, conn, vessel, left, right, core, payload):
         # 不点火上面级、不接管姿态或规划入轨。用户可以
         # 更换载荷；载荷需有独立 ModuleCommand，根部件可以位于任一侧。
         upper.control.throttle = 0.0
-        # 当前载荷已经由 KSP 保持物理模拟，额外扩大物理范围会增加结构抖动。
-        # 切去看芯级时，PRE 的载具切换事件会给后台载荷恢复远距范围。
-        if sc.active_vessel == upper:
-            upper.physics_range = 2500.0
-        else:
-            upper.physics_range = 2000000.0
-            if upper.physics_range < 1990000.0:
-                raise RuntimeError("后台载荷临时物理范围设置未生效，禁止交接")
+        # 不再由 Python 把当前载荷缩到 2500 m：PRE 关闭时，切走镜头后
+        # 就没人恢复后台范围，载荷会被卸载/重载。始终先保留远距范围；
+        # 只有启用的新版 PRE 才负责活动载荷默认范围及切换后的恢复。
+        upper.physics_range = 2000000.0
+        if sc.active_vessel != upper and upper.physics_range < 1990000.0:
+            raise RuntimeError("后台载荷临时物理范围设置未生效，禁止交接")
         try:
             upper.auto_pilot.engaged = False
         except Exception:

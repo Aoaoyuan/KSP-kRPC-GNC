@@ -37,6 +37,41 @@ def unit(a):
     return tuple(x / length for x in a)
 
 
+def coast_allows_manual_warp(state, height, sea_altitude, vertical_speed,
+                             gravity, brake_exit_height, reentry_altitude,
+                             atmosphere_depth, lead_seconds=30.0):
+    """先预留退出加速的时间，再允许纯滑行加速；不主动增加倍率。
+
+    下落距离按当前下落速度和重力保守外推。必须在进入大气或再入点火高度
+    之前退出，而不是等点火那一帧才退速。无效遥测一律不放行。
+    """
+    values = (height, sea_altitude, vertical_speed, gravity, brake_exit_height,
+              reentry_altitude, atmosphere_depth, lead_seconds)
+    if state != "COAST" or not all(math.isfinite(x) for x in values):
+        return False
+    if gravity <= 0 or lead_seconds <= 0:
+        return False
+    margin = max(-vertical_speed, 0.0) * lead_seconds + 0.5 * gravity * lead_seconds ** 2
+    return (height > brake_exit_height and
+            sea_altitude > max(reentry_altitude, atmosphere_depth) + margin)
+
+
+def restrict_manual_warp(sc, safe):
+    """只降低玩家已经选的倍率：危险段 1×，安全段轨道加速最多 10×。
+
+    过高倍率会在两次遥测间跨过再入界面。KSP 默认轨道倍率索引 2 为 10×。
+    0/5/10×不会被提高；物理加速沿用游戏自身上限，并受同一退出条件约束。
+    """
+    rails, physics = sc.rails_warp_factor, sc.physics_warp_factor
+    if not safe and (rails or physics):
+        sc.rails_warp_factor = 0
+        sc.physics_warp_factor = 0
+        print("接近回收关键阶段，已取消时间加速")
+    elif safe and rails > 2:
+        sc.rails_warp_factor = 2
+        print("后台回收滑行：手动轨道加速上限为 10×")
+
+
 def slew_direction(previous, desired, max_angle):
     """把单位方向限制在每次最多转过 ``max_angle`` 弧度。
 
@@ -624,10 +659,12 @@ def main(argv=None, *, connection=None, selected_vessel=None,
         if vessel.situation in finished:
             print("载具已经着陆或溅落，不接管。")
             return
-        if (sc.rails_warp_factor or sc.physics_warp_factor) and not args.allow_warp:
+        # 接管、创建遥测流和发动机通道时先保持 1×。允许加速不等于允许
+        # 在初始化尚未完成时打包载具；进入已验证的 COAST 后再开放。
+        if sc.rails_warp_factor or sc.physics_warp_factor:
             sc.rails_warp_factor = 0
             sc.physics_warp_factor = 0
-            print("回收启动时已取消时间加速并继续执行")
+            print("回收初始化已恢复 1×，安全滑行后才允许手动加速")
         if (args.target_latitude is None) != (args.target_longitude is None):
             raise ValueError("目标经纬度必须同时指定")
         target_position = None
@@ -646,6 +683,8 @@ def main(argv=None, *, connection=None, selected_vessel=None,
                 if engine.has_fuel:
                     engine.active = True
         mu = body.gravitational_parameter
+        atmosphere_depth = body.atmosphere_depth
+        body_radius = body.equatorial_radius
         if vessel.max_thrust / vessel.mass <= mu / norm(vessel.position(frame)) ** 2:
             raise RuntimeError("已激活发动机的可用推重比不足；请检查发动机和燃料")
         # 记录分离后的完整一级，用于区分“完整着陆”和仅剩一个控制核心的残骸。
@@ -726,7 +765,10 @@ def main(argv=None, *, connection=None, selected_vessel=None,
         # 多芯任务可共享一个线程栅栏。单芯回收或命令行直接运行时没有
         # 栅栏，行为与原来完全一致。
         ignition_synchronized = ignition_barrier is None
+        warp_suspended = False
         print("开始回收；Ctrl+C 终止控制。")
+        if args.allow_warp:
+            print("允许纯滑行时手动加速，轨道倍率最多 10×；进入大气/制动前自动退回 1×。")
         while True:
             now = ut()
             dt = now - previous
@@ -755,6 +797,32 @@ def main(argv=None, *, connection=None, selected_vessel=None,
                 sc.rails_warp_factor = 0
                 sc.physics_warp_factor = 0
                 print("回收控制已取消时间加速并继续执行")
+            # 此保护放在零质量/零推力遥测的跳过分支之前：轨道加速会打包
+            # 载具，不能因为遥测暂时无效就漏掉退出加速的时机。
+            if rails() or physics() or warp_suspended:
+                current_sea_alt = flight.mean_altitude
+                gravity_now = mu / max(body_radius + current_sea_alt, 1.0) ** 2
+                safe = args.allow_warp and coast_allows_manual_warp(
+                    guidance.state, flight.surface_altitude, current_sea_alt,
+                    flight.vertical_speed, gravity_now, guidance.warp_exit_height,
+                    cfg.reentry_altitude, atmosphere_depth, cfg.warp_exit_lead_seconds)
+                restrict_manual_warp(sc, safe)
+                if sc.rails_warp_factor:
+                    if not warp_suspended:
+                        # COAST 上一帧油门已为零；打包后不再写 Part 代理。
+                        ap.engaged = False
+                        control.rcs = False
+                        warp_suspended = True
+                    # 轨道打包期间只监视弹道，不向刚体或发动机持续写控制。
+                    time.sleep(.05)
+                    continue
+                if warp_suspended:
+                    if vessel.packed:
+                        time.sleep(.01)
+                        continue
+                    ap.engaged = True
+                    control.rcs = True
+                    warp_suspended = False
             if now - start > cfg.timeout:
                 raise RuntimeError("回收超时")
             current_situation = situation()
@@ -863,14 +931,13 @@ def main(argv=None, *, connection=None, selected_vessel=None,
                                   else None))
             # 加速由玩家手动控制。高倍率会让单次游戏时间跳跃跨过制动点，
             # 所以基于当前速度预测 30 秒自由下落后自动退回 1×。
-            warp_safe = (guidance.state == "COAST" and
-                         altitude() > guidance.warp_exit_height and
-                         sea_altitude() > cfg.reentry_altitude)
-            if (not args.allow_warp or not warp_safe) and (rails() or physics()):
-                # 动力制动、大气再入和制动点预测区都需要密集物理帧。
-                sc.rails_warp_factor = 0
-                sc.physics_warp_factor = 0
-                print("接近制动区，已取消时间加速")
+            warp_safe = coast_allows_manual_warp(
+                guidance.state, altitude(), sea_altitude(),
+                dot(current_velocity, unit(current_position)),
+                mu / dot(current_position, current_position), guidance.warp_exit_height,
+                cfg.reentry_altitude, atmosphere_depth, cfg.warp_exit_lead_seconds)
+            if rails() or physics():
+                restrict_manual_warp(sc, args.allow_warp and warp_safe)
             ap.target_direction = target
             # 两侧芯各自完成安全间距判断和返场姿态对准后，在第一次非零
             # BOOSTBACK 油门前会合。先到的一侧保持零油门和当前姿态，等另
