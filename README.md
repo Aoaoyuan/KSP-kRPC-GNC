@@ -159,3 +159,17 @@ python -m unittest discover -v
 - 摄影模式需要切换活动载具以使用 Stock 相机；复杂存档中可能比普通模式产生更多负载。
 - 中央芯下程目标目前允许公里级误差，重点是结构完整和不被再入烧毁。
 - 载荷分离后的圆化、轨道规划和任务载荷控制有意留给玩家。
+
+## 四侧芯一中央芯试验版
+
+`MySuperHeavyLaunch.py` 是独立的五芯入口；原有 `MyHeavyLaunch.py` 和摄影入口继续用于三芯任务。2026-09-28 在发射台对 `EveProjectV2.0` 只读检查确认：四枚侧芯和中央芯各有 7 台液体发动机，点火级为 10；两枚 Z 向侧芯在第 9 级分离，两枚 X 向侧芯在第 8 级分离，中央芯在第 7 级分离；每枚侧芯有 4 台分离小火箭。发射时按当前载具重新读取级号，并验证两对各自对置、发动机和分离器归属。程序不会主动加速游戏。
+
+先将火箭放在发射台并开启 kRPC，在项目目录运行只读检查：
+
+```powershell
+python MySuperHeavyLaunch.py
+```
+
+检查通过后，运行 `StartSuperHeavyFlight.cmd` 或 `python MySuperHeavyLaunch.py --execute`。程序先保存发射前备份，然后五芯共同点火。第一对默认剩余 27% 燃料时分离并返场；第二对继续推送到 20% 时分离，若当时燃料至少 18%、距跑道不超过 160 km、水平速度不超过 1200 m/s，则尝试返场，否则就近软着陆或完整软溅落。以上是保守初值，可通过 `--first-reserve`、`--second-reserve`、`--late-return-min-fuel`、`--late-return-max-distance`、`--late-return-max-speed` 调整。四个跑道目标仍需这枚新箭实飞标定。
+
+中央芯默认不回收，推进至约 1.5% 燃料后分离，把上面级/载荷交给玩家入轨。若更换发动机或分离小火箭数量，可用 `--side-engines N --core-engines N --separation-motors N` 显式设置，预检仍会逐枚核验。新五芯任务目前通过模拟构型测试与发射台结构读取，**尚未实飞验证分离、返场和着陆**。
